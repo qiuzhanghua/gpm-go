@@ -30,7 +30,8 @@ gpm 二进制也不在某个 `<家目录>/bin/gpm` 的位置上时：清单声�
 ```
 ai-desk-1.0.0-darwin-arm64.zip
 ├── install.sh          # macOS / Linux 的 bootstrap
-├── install.cmd         # Windows 的 bootstrap
+├── install.cmd         # Windows 的 bootstrap（双击这条；策略禁止脚本时的退路）
+├── install.ps1         # Windows 的 bootstrap（v3.15：PowerShell 5.1 / 7，终端与 GUI-Setup 用）
 ├── GUI-Setup.app       # 选填（v3.13）：随包的图形安装器，清单 setup: 段声明（第 3 节）
 │                       # Windows / Linux 上是单个可执行文件 GUI-Setup.exe
 ├── gpm                 # 本平台的 gpm 二进制（Windows 为 gpm.exe）
@@ -47,7 +48,7 @@ ai-desk-1.0.0-darwin-arm64.zip
 * 这个 zip 由 **`gpm pack`** 产出
   （`gpm pack <装配目录> [--os OS] [--arch ARCH] [--gpm 可执行文件] [--default-dir PATH]`）。
   装配目录里只需要 `<简称>-manifest.yaml` + `payload/`（要自举工具链再加 `tools/`；**`payload/` 根下只能有入口那一个条目**，v3.6），其余几样是 `gpm pack` 现场生成的——
-  所以**打出来的 `SHA256SUMS`、`install.sh`、`install.cmd` 在三个平台上是同一份实现**，
+  所以**打出来的 `SHA256SUMS`、`install.sh`、`install.cmd`、`install.ps1` 在三个平台上是同一份实现**，
   不靠每个仓库各写一遍打包脚本（理由见 [`DESIGN.md`](DESIGN.md) §2.15）。`tools/` 也一并打进 zip 并纳入 `SHA256SUMS`——坏掉的 cot 必须在动手之前就被发现。
 * `--default-dir` 只影响生成脚本里的那一个默认值（第 7 节）；留空时脚本**干脆不传 `--dir`**：
   清单有 `requires` 就交给 gpm 去解析那家的家，没有就落到平台数据目录 + 简称（第 1 节）。
@@ -227,15 +228,44 @@ gpm.exe install . --dir "%COT_HOME%" %*
 pause
 ```
 
-脚本只做四件事：切到自己的目录、把家解析成一个具体路径、把 gpm 叫起来、**把用户给的参数原样转交**——`install.sh` 结尾是 `exec ./gpm install . --dir "…" "$@"`、`install.cmd` 是 `gpm.exe install . --dir "…" %*`（v3.12、D42）。拼接位置固定在烘进去的 `--dir` **之后**，靠 Go flag「后出现者覆盖先出现者」让调用方显式给的家赢过打包默认值；`"$@"` 必须带引号（不带引号的 `$@` 会把带空格的路径再拆一次词），`%*` 不带引号（cmd 里 `"%*"` 会把整串并成一个参数）。
+`install.ps1`（v3.15、D44；给终端用户与随包的 GUI-Setup 用）：
+
+```powershell
+if (-not $env:COT_HOME) { $env:COT_HOME = "$env:USERPROFILE\cot" }
+$ErrorActionPreference = 'Stop'
+# 7.3 起这个开关决定原生命令失败要不要抛异常；显式关掉，免得将来默认翻转改掉退出码语义。
+$PSNativeCommandUseErrorActionPreference = $false
+try {
+  Set-Location -LiteralPath $PSScriptRoot
+  & "$PSScriptRoot\gpm.exe" install . --dir $env:COT_HOME @args
+} catch {
+  Write-Host $_.Exception.Message
+  if ($LASTEXITCODE) { exit $LASTEXITCODE }
+  exit 1
+}
+if ($null -eq $LASTEXITCODE) { exit 1 }
+exit $LASTEXITCODE
+```
+
+三条脚本只做四件事：切到自己的目录、把家解析成一个具体路径、把 gpm 叫起来、**把用户给的参数原样转交**——`install.sh` 结尾是 `exec ./gpm install . --dir "…" "$@"`、`install.cmd` 是 `gpm.exe install . --dir "…" %*`、`install.ps1` 是 `& "$PSScriptRoot\gpm.exe" install . --dir … @args`（v3.12、D42；ps1 见 v3.15、D44）。拼接位置固定在烘进去的 `--dir` **之后**，靠 Go flag「后出现者覆盖先出现者」让调用方显式给的家赢过打包默认值；`"$@"` 必须带引号（不带引号的 `$@` 会把带空格的路径再拆一次词），`%*` 不带引号（cmd 里 `"%*"` 会把整串并成一个参数），`@args` 直接 splat（实测带空格与中文都能逐元素传到底）。
 **安装逻辑一行都不在脚本里**，所以三个平台不会各自跑偏。
 工具链自举同样不在脚本里——它由 gpm 按清单的 `requires` 编排（第 3 节、[`DESIGN.md`](DESIGN.md) §2.5.1）。
 
-上面那两行里的 `$HOME/cot` 与 `%USERPROFILE%\cot` 是 `gpm pack` 按清单的 `requires`
+上面那几行里的 `$HOME/cot`、`%USERPROFILE%\cot`、`$env:USERPROFILE\cot` 是 `gpm pack` 按清单的 `requires`
 （或打包方给的 `--default-dir "~/cot"`）烘进来的默认值（`~` 展开：POSIX 用 `$HOME`，
-Windows 用 `%USERPROFILE%`）。没给 `--default-dir`、清单也没有 `requires` 时，脚本里
+cmd 用 `%USERPROFILE%`，PowerShell 用 `$env:USERPROFILE` —— 它不认 `%…%`）。没给 `--default-dir`、清单也没有 `requires` 时，脚本里
 **没有 `--dir` 这一项**——让 gpm 自己按第 1 节的链去定。**烘进去的只是默认值**：用户仍可用 `COT_HOME` / `TDP_HOME`
 环境变量或 `--dir` 覆盖。v3.12 起，脚本收到的参数也会原样交给 gpm，所以 `./install.sh --dir ~/tdp` 里那个 `--dir` 排在烘进去的之后、直接盖掉它。
+
+**`.ps1` 那四条规矩**（都是实测逼出来的）：① **UTF-8 with BOM + CRLF**——Windows PowerShell 5.1
+读没有 BOM 的文件时按当前 ANSI 代码页解码，烘进来的中文家路径会**静默**乱码、装到别的目录去；
+② **不写 `param()` 块**——`-File` 下 `--dir` / `--yes` 才会原样进 `$args`（5.1 与 7 都如此），
+声明了 param 块就会被当成参数名去绑定；③ 参数用 `@args` 转交、位置同上；④ 退出码要带出去，
+而且**不能把「没跑起来」当成功**（可执行文件找不到时 `$LASTEXITCODE` 是空的，直接 `exit` 它
+就成了 0）。另外它**不写 `pause` / `Read-Host`**——要「按任意键」的是双击场景，那条路仍归
+`install.cmd`。它自己**必须由调用方带 `-ExecutionPolicy Bypass` 调起**：从下载的 zip 里解出来的
+`.ps1` 带着下载标记，`RemoteSigned`（Windows 客户端的常见策略）会直接拒绝执行——见
+gsetup-go 的 `REQUIREMENTS.md`。
 
 `<bin>/gpm` 已经存在时**比一次版本**（v3.11、D41）：先跑它的 `--version` 把版本问出来，
 包里这份**严格更新**才替换掉它（并计入账本 `self`），同版本 / 更旧 / 问不出来（不是可
@@ -281,4 +311,4 @@ gpm pack <装配目录> [--out PATH] [--os OS] [--arch ARCH] [--gpm 可执行文
 
 本文是**契约**：字段、路径、脚本、CLI 以本文为准。
 "为什么这么设计"、三平台现状、CI、风险与开放问题、以及被废弃的 v1/v2 范围，
-都在 [`DESIGN.md`](DESIGN.md)（现为 v3.14：随包的图形安装器走清单 `setup:` 段、由 `gpm pack --setup` 放 zip 顶层（D43、FR-32）+ 入口脚本把用户的参数原样转交（D42、FR-31）+ 安装器自己擦掉下载标记（D40）+ 收掉空的 `staging/`（D40）+ gpm 自身也能升级（D41）+ 卸载之前先问一句、`--yes` 跳过（D39、§2.9.2）+ 工具链已经装好就跳过（D37）+ 失败回滚只回滚 GUI（D34、FR-25）+ 账本写回之前比对原文、不加锁（D38）+ 账本按家命名 `<家目录名>-state.json`（D36）+ gpm 之名 + 家 = 工具链自己的家 + **入口落在家目录顶层**（D35）+ 清单声明 `requires` 并离线自举 zip 自带的 cot / tdp + 启动器注入环境 + 装完之后从自己的位置把根找回来 + 三平台已落地 + CI 跑绿；**v3.14 补三处"契约说了、代码没做/没写"**：fish 也写 `~/.profile`、`$SHELL` 没设时按平台默认、以及把家目录的两条链（安装 `ResolveInstall` / 装完之后 `Resolve`）写进第 1、8 节）。
+都在 [`DESIGN.md`](DESIGN.md)（现为 v3.15：Windows 上多一条 `install.ps1`、三条入口并存（D44、FR-33）+ 随包的图形安装器走清单 `setup:` 段、由 `gpm pack --setup` 放 zip 顶层（D43、FR-32）+ 入口脚本把用户的参数原样转交（D42、FR-31）+ 安装器自己擦掉下载标记（D40）+ 收掉空的 `staging/`（D40）+ gpm 自身也能升级（D41）+ 卸载之前先问一句、`--yes` 跳过（D39、§2.9.2）+ 工具链已经装好就跳过（D37）+ 失败回滚只回滚 GUI（D34、FR-25）+ 账本写回之前比对原文、不加锁（D38）+ 账本按家命名 `<家目录名>-state.json`（D36）+ gpm 之名 + 家 = 工具链自己的家 + **入口落在家目录顶层**（D35）+ 清单声明 `requires` 并离线自举 zip 自带的 cot / tdp + 启动器注入环境 + 装完之后从自己的位置把根找回来 + 三平台已落地 + CI 跑绿；**v3.14 补三处"契约说了、代码没做/没写"**：fish 也写 `~/.profile`、`$SHELL` 没设时按平台默认、以及把家目录的两条链（安装 `ResolveInstall` / 装完之后 `Resolve`）写进第 1、8 节）。

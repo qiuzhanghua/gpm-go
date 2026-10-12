@@ -2,7 +2,9 @@ package pack
 
 import (
 	"archive/zip"
+	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -108,7 +110,7 @@ func TestBuildRoundTrip(t *testing.T) {
 
 	ns := names(t, got)
 	for _, want := range []string{
-		InstallSH, InstallCMD, "gpm", "ad-manifest.yaml", stage.SumsFile,
+		InstallSH, InstallCMD, InstallPS1, "gpm", "ad-manifest.yaml", stage.SumsFile,
 		"payload/AI Desk.app/Contents/Info.plist",
 		"payload/AI Desk.app/Contents/MacOS/ai-desk",
 	} {
@@ -326,6 +328,116 @@ func TestInstallBatchLineEndingsAndEncoding(t *testing.T) {
 }
 
 // firstNonASCII 返回第一个非 ASCII 字节的下标，全 ASCII 时返回 -1。
+// install.ps1（v3.15、D44）是第三条入口。下面几条钉住它必须长成的样子 ——
+// 与 install.cmd 那两条「必须」正好互补：那边要 CRLF + 纯 ASCII（cmd.exe 的解析
+// 怪癖），这边要 **UTF-8 with BOM**（PowerShell 5.1 读没有 BOM 的文件时按当前 ANSI
+// 代码页解码，烘进来的中文家路径会**静默**变成乱码路径）+ CRLF；两边都不依赖对方。
+func TestInstallPowerShellFacts(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"没给 --default-dir", InstallPowerShell("", nil)},
+		{"--default-dir 是工具链的家", InstallPowerShell("~/cot", nil)},
+		{"按 requires 定家", InstallPowerShell("", []string{"cot"})},
+		{"--default-dir 是绝对路径", InstallPowerShell(`D:\apps\ad`, nil)},
+		{"烘了中文路径", InstallPowerShell(`C:\用户\cot`, nil)},
+	}
+	for _, tc := range cases {
+		// 1) BOM 必须在最前面
+		if !bytes.HasPrefix([]byte(tc.body), []byte("\xef\xbb\xbf")) {
+			t.Errorf("%s：install.ps1 开头没有 UTF-8 BOM —— 5.1 会把中文家路径读成乱码", tc.name)
+		}
+		// 2) 行尾只能是 CRLF
+		if nl, crlf := strings.Count(tc.body, "\n"), strings.Count(tc.body, "\r\n"); nl != crlf {
+			t.Errorf("%s：有 %d 个 LF 但不是 CRLF（CRLF=%d）", tc.name, nl, crlf)
+		}
+		// 3) 不许有 param 块：有它，--dir 就会被当成参数名去绑定
+		if strings.Contains(tc.body, "param(") {
+			t.Errorf("%s：install.ps1 里出现了 param( —— --dir / --yes 就不再原样进 $args", tc.name)
+		}
+		// 4) 参数原样转交，位置在 gpm install . 与烘进去的 --dir 之后
+		if n := strings.Count(tc.body, "@args"); n != 1 {
+			t.Errorf("%s：应当恰有一处 @args，实际 %d 处", tc.name, n)
+		}
+		at := strings.Index(tc.body, "@args")
+		if gi := strings.Index(tc.body, `gpm.exe" install .`); gi < 0 || gi > at {
+			t.Errorf("%s：@args 必须跟在 gpm.exe install . 之后", tc.name)
+		}
+		if d := strings.Index(tc.body, "--dir "); d >= 0 && d > at {
+			t.Errorf("%s：--dir 必须出现在 @args 之前，否则用户传的家盖不住默认值", tc.name)
+		}
+		// 5) 退出码：末行就是它；「跑不起来」那条路也要有守卫，不能静默 exit 0
+		if !strings.HasSuffix(strings.TrimRight(tc.body, "\r\n"), "exit $LASTEXITCODE") {
+			t.Errorf("%s：install.ps1 的末行应当是 exit $LASTEXITCODE：\n%s", tc.name, tc.body)
+		}
+		if strings.Count(tc.body, "exit $LASTEXITCODE") < 2 || !strings.Contains(tc.body, "if ($LASTEXITCODE)") {
+			t.Errorf("%s：catch 里缺「拿不到退出码就 exit 1」的守卫（可执行文件找不到时 $LASTEXITCODE 是空的）：\n%s", tc.name, tc.body)
+		}
+		// 6) 切到自己的目录（gpm install . 的 . 是当前目录）+ 不暂停
+		if !strings.Contains(tc.body, "Set-Location -LiteralPath $PSScriptRoot") {
+			t.Errorf("%s：没有切到脚本自己的目录，gpm install . 会装错东西", tc.name)
+		}
+		if strings.Contains(tc.body, "Read-Host") || strings.Contains(tc.body, "pause") {
+			t.Errorf("%s：install.ps1 不该有 pause / Read-Host —— 要按任意键的是 install.cmd", tc.name)
+		}
+	}
+}
+
+// 目录烘法：与 install.cmd 同一套规矩，只是写法换成 PowerShell 的。
+func TestInstallPowerShellBakesDefaultDir(t *testing.T) {
+	ps1 := InstallPowerShell("~/cot", nil)
+	for _, want := range []string{`$env:USERPROFILE\cot`, `if (-not $env:COT_HOME)`, `--dir $env:COT_HOME`} {
+		if !strings.Contains(ps1, want) {
+			t.Errorf("install.ps1 里没找到 %q：\n%s", want, ps1)
+		}
+	}
+	if strings.Contains(ps1, "%USERPROFILE%") {
+		t.Errorf("install.ps1 里不该出现 cmd 的 %%USERPROFILE%%（PowerShell 不展开它）：\n%s", ps1)
+	}
+	if got := InstallPowerShell("", []string{"cot"}); !strings.Contains(got, `--dir $env:COT_HOME`) {
+		t.Errorf("install.ps1 没按 requires 定家：\n%s", got)
+	}
+	if got := InstallPowerShell(`D:\apps\ad`, nil); !strings.Contains(got, `--dir "D:\apps\ad"`) {
+		t.Errorf("install.ps1 没把绝对路径原样烘进去：\n%s", got)
+	}
+	if got := InstallPowerShell("", nil); strings.Contains(got, "--dir") {
+		t.Errorf("清单没有 requires、打包方也没给 --default-dir 时不该传 --dir：\n%s", got)
+	}
+}
+
+// 光看字符串不够：真拿 Windows PowerShell 5.1 读一遍、解析一遍。
+//
+// 一次验两件事：① 语法能被 5.1 的解析器收下（模板少括号、少引号都会在这里现形）；
+// ② BOM 真的让 5.1 按 UTF-8 读 —— 烘一个中文路径进去，让 5.1 读原文找那个哨兵，
+// 没有 BOM 时它会读成乱码（同一台机器上 2×2 实测过）。
+func TestInstallPowerShellReadsInRealWindowsPowerShell(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("这条要真的 Windows PowerShell 5.1")
+	}
+	sh, err := exec.LookPath("powershell.exe")
+	if err != nil {
+		t.Skip("没装 Windows PowerShell")
+	}
+	const cjk = `C:\用户\张三\cot`
+	body := InstallPowerShell(cjk, nil)
+	p := filepath.Join(t.TempDir(), InstallPS1)
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := `$errs = $null
+[void][System.Management.Automation.Language.Parser]::ParseFile($env:GPM_PS1, [ref]$null, [ref]$errs)
+if ($errs.Count) { $errs | ForEach-Object { Write-Host $_.Message }; exit 1 }
+$t = Get-Content -LiteralPath $env:GPM_PS1 -Raw
+if (-not $t.Contains($env:GPM_SENTINEL)) { Write-Host "读不到哨兵：BOM 没起作用"; exit 2 }
+exit 0`
+	cmd := exec.Command(sh, "-NoProfile", "-NonInteractive", "-Command", script)
+	cmd.Env = append(os.Environ(), "GPM_PS1="+p, "GPM_SENTINEL="+cjk)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("Windows PowerShell 5.1 说这个脚本有问题：%v\n%s\n脚本原文：\n%s", err, out, body)
+	}
+}
+
 func firstNonASCII(s string) int {
 	for i := 0; i < len(s); i++ {
 		if s[i] > 0x7f {

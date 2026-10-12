@@ -209,7 +209,7 @@ func cmdPack(args []string) error {
 	goos := fs.String("os", "", "目标平台（默认当前平台）")
 	goarch := fs.String("arch", "", "目标架构（默认当前架构）")
 	self := fs.String("gpm", "", "要嵌进包里的 gpm 可执行文件（默认当前进程）")
-	ddir := fs.String("default-dir", "", "烘进 install.sh/install.cmd 的默认安装根，如 ~/cot（留空则按清单 requires 决定）")
+	ddir := fs.String("default-dir", "", "烘进 install.sh/install.cmd/install.ps1 的默认安装根，如 ~/cot（留空则按清单 requires 决定）")
 	setup := fs.String("setup", "", "随包的 GUI-Setup 的路径（清单 setup: 段声明的那份）")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "用法: gpm pack <含 <简称>-manifest.yaml 与 payload/ 的目录> [选项]")

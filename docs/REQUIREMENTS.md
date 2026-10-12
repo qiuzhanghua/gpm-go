@@ -15,6 +15,8 @@
 > **v3.12 让入口脚本把参数转交出去**（[`DESIGN.md`](DESIGN.md) D42、§0.3.12、FR-31）：`gpm pack` 生成的 `install.sh` / `install.cmd` 末尾拼上 `"$@"` / `%*`，位置固定在烘进去的 `--dir` **之后**。起因是 AI Desk 0.3.1 的真机 e2e：`./install.sh --yes` 里的 `--yes` 被 shell 吃掉，gpm 在非交互环境里直接跳过 PATH 集成，而同一份包加不加参数结果一模一样。落地见 F16、A27。
 >
 > **v3.13 让分发包里能坐一个图形安装器**（[`DESIGN.md`](DESIGN.md) D43、§0.3.13、FR-32）：清单新增 `setup:` 段（与 `entry:` 平行，但路径**相对包根**），`gpm pack --setup` 把它放在 zip **顶层**、与 `install.sh` 并排，**不进 `payload/`、不进 `SHA256SUMS`**（与 `install.sh` / `gpm` / 清单同类：包根上的"信任起点"）；非 Windows 的 `.app` 里只给 `Info.plist` 点名的那个主可执行文件补 `0755`。落地见 F17、A28。
+>
+> **v3.15 给 Windows 补上第三条入口 `install.ps1`**（[`DESIGN.md`](DESIGN.md) D44、§0.3.15、FR-33）：`gpm pack` 从此生成三条入口（`install.sh` / `install.cmd` / `install.ps1`），**语义完全一致**。`.cmd` 守**双击**与「执行策略禁脚本」两条路；`.ps1` 给终端用户与随包的 GUI-Setup 用，**调用方必须带 `-ExecutionPolicy Bypass`**，被拦就退回 `.cmd`。这一版**推翻了"不做 `install.ps1`"**那条旧裁决——当初的理由（PowerShell 默认策略会拦脚本）实测成立，所以做成「**并存 + 退路**」而不是「替换」。落地见 F18。
 
 >
 > **v3.11 让 gpm 自己也能升级**（[`DESIGN.md`](DESIGN.md) D41、§0.3.11）：装完应用之后问一次 `<根>/bin/gpm` 的版本（执行它的 `--version`），包里这份**严格更新**才替换；同版本 / 更旧 / 问不出来一律留着（`--force` 才无视版本覆盖）。这**修订了 D29** 那句"已经有一个 gpm 就不覆盖"，并关闭 O7。用户原话："gpm 增加一个 --version 功能，方便安装的时候做比较，如果是新版本就替换旧版本"。落地见 F15、A26，代价与降低手段记在 R19。
@@ -26,7 +28,7 @@
 ## 2. 用户与场景
 每个GUI程序会有一个简称，如AI Desk简称为ad, AI Code简称为ac，该简称在安装后能从terminal/cmd调用。
 
-用gpm打包好的GUI应用，用户解压后，运行其中的install.cmd或者install.sh进行安装。
+用gpm打包好的GUI应用，用户解压后，运行其中的install.sh（macOS / Linux）、install.cmd 或 install.ps1（Windows）进行安装。
 
 如果参数是cot,则可以调用`cot i -s ~/cot` 来自动化安装好命令行开发的工具；
 并保证将激活cot的命令写到.profile, .zshrc, Windows .Profile等位置，如果不清楚，问我。
@@ -74,6 +76,8 @@ GUI的程序安装到~/cot目录下而非~/cot/bin下。
 **F16 入口脚本把参数转交出去（v3.12）**：`gpm pack` 生成的 `install.sh` 末尾是 `exec ./gpm install . --dir "${COT_HOME:-$HOME/cot}" "$@"`，`install.cmd` 是 `gpm.exe install . --dir "%COT_HOME%" %*`。用户（或图形安装器）传的 `--dir` / `--with` / `--yes` / `--no-path` 因此真的到达 gpm；`--dir` 排在烘进去那个**之后**，靠 Go flag「后出现者覆盖先出现者」生效，所以**调用方显式给的家赢过打包默认值**。`"$@"` 必须带引号（不带引号的 `$@` 会把带空格的路径再拆一次词），`%*` 不带（cmd 里 `"%*"` 会并成一个参数）。见 [`DESIGN.md`](DESIGN.md) D42、FR-31。
 
 **F17 分发包能捎带一个图形安装器（v3.13）**：清单 `setup:` 段声明随包的 GUI-Setup（`setup.<goos>` 与 `entry.<goos>` 同形，`bundle` / `exe` 二选一，**相对包根**）；`gpm pack --setup <路径>` 把它放 zip **顶层**、不进 `payload/`、不进 `SHA256SUMS`。非 Windows 的 bundle 里只给 `Contents/Info.plist` 的 `CFBundleExecutable` 点名的那个文件补 x 位。清单声明了却没给 `--setup`、给了却没声明、名字对不上、bundle 给了文件、exe 给了目录、缺当前平台、路径越出包根——七种错法都在打包时报错且不留半包。见 [`DESIGN.md`](DESIGN.md) D43、FR-32。
+
+**F18 Windows 上多一条 `install.ps1`（v3.15）**：`gpm pack` 生成的入口从两条变三条——`install.sh`（POSIX）、`install.cmd`（cmd.exe）、**`install.ps1`**（Windows PowerShell 5.1+），三者语义完全一致（切到自己的目录 → 把家解析成具体路径 → 调 gpm → **原样转交参数**）。`.cmd` 保留**双击**那条路（`.ps1` 双击会被记事本打开），也是**执行策略禁脚本时的退路**；`.ps1` 给终端用户与随包的 GUI-Setup 用，**调用方必须带 `-ExecutionPolicy Bypass`**。`.ps1` 另有四条硬规矩：**UTF-8 with BOM** + CRLF（5.1 读无 BOM 文件会按 ANSI 代码页解码，中文家路径静默乱码）、不写 `param()` 块（有它 `--dir` 会被当参数名绑定）、`@args` 原样转交、退出码带出去且「可执行文件找不到」不许静默判成功；它**不写 `pause` / `Read-Host`**。`install.cmd` 与 `install.sh` 的输出**逐字节未变**（"`install.cmd` 不该依赖 PowerShell"那条断言照旧成立）。见 [`DESIGN.md`](DESIGN.md) D44、FR-33。
 
 ## 4. 非功能需求
 

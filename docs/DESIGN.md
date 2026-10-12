@@ -1,4 +1,4 @@
-# gpm — GUI Package Manager 设计文档（v3.14）
+# gpm — GUI Package Manager 设计文档（v3.15）
 
 > **契约在 [`PACKAGE-FORMAT.md`](PACKAGE-FORMAT.md)，本文讲"为什么这么设计"。**
 > 两者冲突时以 `PACKAGE-FORMAT.md` 为准——它是冻结的对外接口，本文是内部推理。
@@ -14,6 +14,19 @@ v3 把范围从 v2 的"通用装机清单 + 图形安装器"收窄为**一次装
 **v3.13 让分发包里能坐一个"图形安装器"。** v3.12 把参数通道打通，就是为了这一版：包现在可以在清单的 **`setup:`** 段声明随包的 GUI-Setup（macOS 一个 `.app`、Windows / Linux 一个可执行文件）。`gpm pack --setup <路径>` 把它放在 zip 的**顶层**——与 `install.sh` / `gpm` 并排，**不进 `payload/`**：`payload/` 是"要装进家里的东西"，而 GUI-Setup 是**安装过程本身**，装完它就该留在解压目录里陪用户，不该跟着账本落进家（"`payload/` 根下只许一个条目"这条铁律也因此不必破）。两个相对根必须分清：清单里 `entry:` 相对 `payload/`，`setup:` 相对**包根**。它**不进 `SHA256SUMS`**——`install.sh`、`gpm`、清单也都不进，它们是同一种东西：包根上的"信任起点"，校验它们得先有一个可信的校验器。顺带修掉一个只在 `.app` 上暴露的坑：`payload/` 之外的东西以前从没经过权限位修整，而 `.app` 内层二进制是 `0644` 时双击没反应、报错还看不出所以然，所以打包时按 `Contents/Info.plist` 的 `CFBundleExecutable` 点名的那个文件补 x 位（**只补它一个**，不是整棵树）。见 §0.3.13、D43、FR-32。
 
 **v3.14 让两处"文档说的"与"代码做的"对齐。** 一是 PATH 落点：契约一直写着"不论 `$SHELL` 都再写一份 `~/.profile` 兜底"，而 `ShellProfiles` 的 fish 分支**提前 return** 了——用 fish 的人把 shell 换成 bash/sh、或者跑 `sh -l`，PATH 就没了；修的时候顺带发现同一函数里第二处同类漏洞：`$SHELL` 没设时那句 `filepath.Base(os.Getenv("SHELL"))` 得到的是 `.` 而不是空串，于是"没设就按平台默认（macOS 是 zsh）"这半句从不生效，只写了 zsh 根本不读的 `~/.profile`。二是家目录：`home.ResolveInstall`（安装那一次）与 `home.Resolve`（装完之后）本来就是**两条链**，而契约与 `gpm help` 只写了前一条，现在 D21 与 `usage` 把两条都写清（顺序未变，只是补齐）。见 §0.3.14。
+
+**v3.15 给 Windows 补上第三条入口 `install.ps1`。** `.cmd` 在 Windows 上是唯一「双击就能跑」的东西
+（`.ps1` 双击会被记事本打开），可它在终端里最难用：末尾那句 `pause` 逼得调用方拿 `< NUL` 喂一个
+EOF 才不会挂住，参数靠 `%*`、退出码得先存起来再 pause。PowerShell 用户与随包的 GUI-Setup 手上有
+更好的选择，所以三条入口**并存**（`install.sh` / `install.cmd` / `install.ps1`，都由 `gpm pack`
+现场生成、三个平台同一份实现）：`.cmd` 守**双击**与「执行策略禁脚本」这两条路，`.ps1` 给终端与
+GUI。这一版推翻了"不做 `install.ps1`"那条旧裁决 —— 当初的理由是 PowerShell 默认执行策略会拦脚本，
+实测确实会（从下载的 zip 里解出来的 `.ps1` 带着下载标记，`RemoteSigned` 直接拒），所以规矩不是
+"改用它"而是「**加它、并留好退路**」：调用方必须带 `-ExecutionPolicy Bypass`，被拦就退回 `.cmd`
+（gsetup-go 的选择顺序：`pwsh` 7 > `powershell.exe` 5.1 > `install.cmd`）。脚本本身另有四条被实测
+逼出来的规矩（UTF-8 **with BOM** —— 5.1 读无 BOM 文件时按 ANSI 代码页解码、烘进来的中文家路径会
+静默乱码；不写 `param()` 块；`@args` 原样转交；退出码带出去、且「没跑起来」不许当成功）。
+见 §0.3.15、D44、FR-33。
 
 **v3.12 让入口脚本把用户的参数原样转交。** 生成的 `install.sh` 一直是 `exec ./gpm install . --dir "…"`——**末尾没有 `"$@"`**，于是 `./install.sh --yes`、`./install.sh --dir ~/tdp` 这类参数被 shell 悄悄吃掉：用户以为自己在传参数，gpm 那边什么都没收到（非交互环境里表现为 PATH 集成被静默跳过，交互环境里表现为又弹一次询问）。这一版把 `"$@"`（POSIX）与 `%*`（cmd）拼在烘进去的 `--dir` **之后**——位置很关键：Go 的 flag 是后者覆盖前者，所以顺序决定了「用户传的 `--dir` 赢过烘进去的默认值」。引号也不能省：不带引号的 `$@` 会被再拆一次词，带空格的家目录会裂成两个参数。见 §0.3.12、D42、FR-31。
 
@@ -68,6 +81,8 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 | **D41** | **`<家>/bin/gpm` 比一次版本，严格更新才替换**：装完应用之后跑一次家里那份的 `--version` 把版本问出来，只有包里这份（`Options.SelfVersion`，= 运行中进程的 `main.version`）**严格更新**时才覆盖它；同版本、更旧、或问不出版本一律原样留着。**`--force` 无视版本直接覆盖**（含降级）。替换**不看那个文件是谁放的** —— 用户自己搁的那份也一样换。`--version` 的输出按用户裁决保持 `gpm 0.6.1` 不变。 | v3.11，本项目。用户原话："gpm 增加一个 --version 功能，方便安装的时候做比较，如果是新版本就替换旧版本"。它**修订 D29** 里那句"已经有一个 gpm 就不装、不覆盖"，并关闭 O7（gpm 自身如何升级）；代价见 R19 |
 | **D42** | **入口脚本把用户的参数原样转交给 gpm**：生成的 `install.sh` 末尾是 `exec ./gpm install . --dir "…" "$@"`，`install.cmd` 是 `gpm.exe install . --dir "…" %*`。拼接位置固定在**烘进去的那个 `--dir` 之后**——Go 的 flag 后出现者覆盖先出现者，于是「用户或图形安装器显式传的家」赢过「打包时烘进去的默认值」；`"$@"` 必须带引号，否则带空格的路径会被再拆一次词。 | v3.12，本项目。用户裁决："修：让 install.sh 转发参数"——起因是 AI Desk 0.3.1 的真机 e2e 里 `./install.sh --yes` 没生效、PATH 集成被静默跳过（§3） |
 | **D43** | **随包的图形安装器走清单的 `setup:` 段，由 `gpm pack --setup` 放 zip 顶层**：字段与 `entry:` 平行、也是 `bundle` / `exe` 二选一，但路径**相对包根**（`entry:` 相对 `payload/`）；打包时清单声明了就必须用 `--setup` 指出那份文件，名字要与清单里写的**逐字相同**（GUI-Setup 就是靠这个名字找自己）。它在 zip 顶层**不进 `payload/`**（那是"要装进家里的东西"，而它是安装过程本身），也**不进 `SHA256SUMS`**（与 `install.sh` / `gpm` / 清单同类：包根上的信任起点，校验它们需要一个先存在的可信校验器）。非 Windows 目标上，bundle 的主可执行文件（`Info.plist` 的 `CFBundleExecutable`）缺 x 位就补 `0755`，且只补它一个。 | v3.13，本项目。用户裁决（gsetup-go 需求讨论）："GUI-Setup 放 zip 顶层、与 install.sh 同级"、"用 manifest 新增 `setup:` 字段声明 GUI-Setup（与 `entry:` 平行）"——**顶层**而不是另起 `setup/` 目录、也不是塞进 `payload/`：前者要 GUI-Setup 去猜自己在包里埋了多深，后者会同时破坏"`payload/` 单条目"与"装进家的东西都要记账"两条 |
+
+| **D44** | **Windows 上多一条 `install.ps1`，三条入口并存**：`gpm pack` 同时生成 `install.sh`（POSIX）、`install.cmd`（cmd.exe）、`install.ps1`（Windows PowerShell 5.1+），三者语义一致（切到自己的目录 → 把家解析成具体路径 → 调 gpm → **原样转交参数**，D42）。`.cmd` 保留**双击**这条路（`.ps1` 双击会被记事本打开），也是**执行策略禁脚本时的退路**；`.ps1` 给终端用户与随包的 GUI-Setup 用，调用方**必须带 `-ExecutionPolicy Bypass`**（下载来的 zip 里那份带 MOTW，`RemoteSigned` 会拒）。`.ps1` 的四条硬规矩：UTF-8 **with BOM** + CRLF、**不写 `param()` 块**（有它，`-File` 下 `--dir` 会被当成参数名绑定）、`@args` 原样转交、退出码带出去且「可执行文件找不到」不许静默判成功；它**不写 `pause` / `Read-Host`**。 | v3.15，本项目。用户裁决："现在命令行安装的只有 install.cmd for windows, install.sh for non-windows. 我还是要改设计，加 install.ps1"——推翻 §8.2 那条"不做 install.ps1"（当初的理由是执行策略，实测成立，所以做成「并存 + 退路」而不是「替换」） |
 
 ### 0.2 由上述决策推导出的硬性设计约束
 
@@ -217,6 +232,15 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 | GUI-Setup **不进 `SHA256SUMS`** | 与 `install.sh` / `gpm` / 清单同类：包根上的"信任起点"。校验它们得先有一个可信的校验器，而这个校验器只能来自包外——用户确认"这是我自己下载的那个包"（R1） |
 | 非 Windows 的 bundle 补一次 x 位，**只补主可执行文件** | `.app` 从网盘、邮件、Windows 资源管理器过一遍就可能丢掉内层二进制的 x 位，双击没反应、报错还看不出所以然。名字信 `Contents/Info.plist` 的 `CFBundleExecutable`，读不出来才退到 `Contents/MacOS/<bundle 名去掉 .app>`；给整棵树上 x 位会连 `Info.plist` 一起标成可执行，那是另一种坏包 |
 
+### 0.3.15 v3.14 → v3.15 变更记录
+
+| 变了什么 | 为什么 |
+|---|---|
+| `gpm pack` 多生成一条 `install.ps1`；`scriptDir` / `toolchainDir` / `dirSpec` 改成按「谁解释这条脚本」分派（`shellSH` / `shellCMD` / `shellPS1`），同一个家分别写成 `$HOME/cot`、`%USERPROFILE%\cot`、`$env:USERPROFILE\cot` | 三条脚本表达的是同一件事，写法却必须按解释器分（PowerShell **不认** `%USERPROFILE%`）。收敛到一处，才不会"改了一条忘了另两条" |
+| `.ps1` 的四条硬规矩：UTF-8 **with BOM** + CRLF、不写 `param()`、`@args` 原样转交、退出码带出去且「没跑起来」不许当成功 | 每条都在本机真跑过：无 BOM + 中文在 5.1 下**静默乱码**（`鐑樼剻鐨勮矾寰?`，7.x 正常）；`-File` 下 5.1 与 7 都是"没有 param 块才原样进 `$args`"；带空格与中文的参数按元素传到底；而「可执行文件找不到」时 `$LASTEXITCODE` 是空的、直接 exit 它就变成 0 —— 与那个"末行是 pause 吞掉退出码"是同一类坑，只是换了个 shell |
+| `install.cmd` **一个字都没改**，`TestInstallScriptsAreSelfContained` 里那句"install.cmd 不该依赖 PowerShell"照旧成立 | 加第三条入口不等于把前两条拉进 PowerShell；在执行策略被 GPO 锁死的机器上，`.cmd` 是唯一还能走的路 |
+| 三条新用例：`.ps1` 的字面规矩（BOM / CRLF / 无 param / 恰一处 `@args` / `--dir` 在它之前 / 末行是退出码 / 没有 pause）、目录烘焙（`$env:USERPROFILE` 与 `if (-not $env:COT_HOME)`）、以及**真拿 Windows PowerShell 5.1 解析并读一遍**（用中文哨兵验 BOM） | 光比字符串看不出 BOM 有没有起作用，也看不出 5.1 能不能收下这个模板 —— 这条用例就是那次 2×2 实验的自动化版本 |
+
 ### 0.3.14 v3.13 → v3.14 变更记录
 
 | 变了什么 | 为什么 |
@@ -314,6 +338,7 @@ v2 里那套"多应用清单 / 镜像表 / 版本源 / 离线 store / Wails 四�
 | FR-30 | 上面那次版本比较的两边：一边是 `Options.SelfVersion`（= 运行中这份 gpm 的 `main.version`，由 cmd 注入），另一边是**执行那个文件**拿到的 `--version` 输出；解析认 semver 那套形状（`gpm `/`v` 前缀与 `+构建` 都容错，`-dev`、`git describe` 的 `-2-gSHA` 按 semver 预发布处理），**任一边读不出来就判定"不替换"**（D41） |
 | FR-31 | 生成的入口脚本把用户给的参数**原样转交**给 gpm：POSIX 侧拼带引号的 `"$@"`、Windows 侧拼 `%*`，位置固定在烘进去的 `--dir` 之后，好让调用方（用户或图形安装器）用 `--dir` / `--with` / `--yes` / `--no-path` 覆盖打包时的默认值（D42） |
 | FR-32 | 分发包可以捎带一个图形安装器：清单 `setup:` 段声明（`bundle` / `exe` 二选一，**相对包根**），`gpm pack --setup` 把它放到 zip **顶层**、不进 `payload/`、不进 `SHA256SUMS`；非 Windows 的 bundle 缺 x 位时只给主可执行文件补 `0755`（D43） |
+| FR-33 | Windows 上多一条 `install.ps1`（v3.15）：`gpm pack` 生成三条语义一致的入口（`install.sh` / `install.cmd` / `install.ps1`）；`.cmd` 守双击与执行策略被锁死的机器，`.ps1` 给终端与 GUI-Setup，**调用方带 `-ExecutionPolicy Bypass`**、被拦就退回 `.cmd`。`.ps1` 必须 UTF-8 **with BOM** + CRLF、无 `param()` 块、`@args` 原样转交、末行 `exit $LASTEXITCODE` 且「没跑起来」不许判成功（D44） |
 
 ### 1.4 非功能需求
 
@@ -943,7 +968,8 @@ gpm pack <装配目录> --gpm <当前平台的 gpm> --default-dir "~/cot"
 ```
 <id>-<version>-<os>-<arch>.zip
 ├── install.sh        # macOS / Linux，由 pack 生成
-├── install.cmd       # Windows，由 pack 生成
+├── install.cmd       # Windows，由 pack 生成（双击这条）
+├── install.ps1       # Windows，由 pack 生成（v3.15：PowerShell 5.1 / 7）
 ├── gpm               # 打包时那个 gpm（Windows 目标时叫 gpm.exe）
 ├── ad-manifest.yaml  # 文件名 = <简称>-manifest.yaml（v3.5）
 ├── tools/…           # 只在 requires 非空时（D32）
@@ -951,7 +977,7 @@ gpm pack <装配目录> --gpm <当前平台的 gpm> --default-dir "~/cot"
 └── SHA256SUMS
 ```
 
-两个入口脚本都只做 bootstrap（§2.1）。**"装到哪儿"就写在这一行里**：
+三条入口脚本都只做 bootstrap（§2.1）。**"装到哪儿"就写在这一行里**：
 
 ```sh
 exec ./gpm install . --dir "${COT_HOME:-$HOME/cot}" "$@"
@@ -967,7 +993,7 @@ exec ./gpm install . --dir "${COT_HOME:-$HOME/cot}" "$@"
 
 | 谁 | 什么时候、被谁调用 | 备注 |
 |---|---|---|
-| `install.sh` / `install.cmd` | 用户双击、或解压后在终端里跑一次 | 只做四件事：切到自己的目录、补 `+x`、把活交给 `./gpm`、**把用户给的参数原样转交**（v3.12、D42） |
+| `install.sh` / `install.cmd` / `install.ps1`（三条并存，v3.15、D44） | 用户双击（Windows 上是 `install.cmd`）、或解压后在终端里跑一次 | 只做四件事：切到自己的目录、补 `+x`、把活交给 `./gpm`、**把用户给的参数原样转交**（v3.12、D42）。三条语义一致：`.cmd` 守**双击**与「执行策略禁脚本」两条路，`.ps1` 给终端与 GUI（调用方带 `-ExecutionPolicy Bypass` 调起） |
 | 随包的 `GUI-Setup.app` / `GUI-Setup.exe`（v3.13、D43） | 用户解压之后**双击它**（愿意的话也可以在终端里跑它旁边的 `install.sh`） | 它自己**不装任何东西**：只把界面上的选择（装哪个家、哪家工具链、要不要接 PATH）拼成参数交给同目录的 `install.sh` / `install.cmd`，再把命令的输出实时显示出来——v3.12 转发的那个 `"$@"` 就是给它用的。装完留在解压目录里，不落家、不进账本 |
 | 包里的 `./gpm` | 被 `install.sh` 调这一次 | **用户机器上事先不需要有 gpm**——这就是 D20"zip 自带 gpm"的全部意思 |
 | `<家>/bin/gpm` | 用户之后敲 `gpm list` / `gpm where` / `gpm uninstall` | 装的时候把自己拷过去的那一份（D29）。那儿本来就有 gpm 则**比一次版本**（v3.11、D41）：包里这份严格更新才覆盖（并计入账本），否则留着且不计入账本；卸载到最后一个包时删掉，但环境里有 `COT_HOME` / `TDP_HOME` 就留着 |
@@ -1123,6 +1149,7 @@ gpm **没有网络代码、没有 `upgrade` 子命令**（§0.5），所以它�
 | **M17 入口脚本转发参数（v3.12）** | `InstallScript` / `InstallBatch` 末尾拼 `"$@"` / `%*`；位置固定在烘进去的 `--dir` 之后；`pack_test.go` 新增 `TestInstallersForwardArgs`（三种取向 + 变异检验）；文档同步（§0.3.12、D42、FR-31、PACKAGE-FORMAT §7） | ✅ **已完成**（v3.12）：`gofmt` / 三平台 `go vet` / `go test ./...` 全绿；本机拿 AI Desk 0.3.1 的正式产物重打包 e2e（带参生效 / 不带参对照 / 幂等 / `--dir` 覆盖 / 卸载回放，§3） |
 | **M18 随包的图形安装器（v3.13）** | 清单 `setup:` 段 + `gpm pack --setup`（zip 顶层、不进 `payload/`、不进 `SHA256SUMS`、只给主可执行文件补 x 位）；四条新用例（顶层落位 / Windows 的 exe / 七种错法 / 只补主程序）；文档同步（§0.3.13、D43、FR-32、PACKAGE-FORMAT 第 2/3/8 节）；gsetup-go 那边接上 `setup:` 段 | ✅ **已完成**（v3.13）：`gofmt` / 三平台 `go vet` / `go test ./...` 全绿；本机拿 AI Desk 0.3.1 的正式产物 + 真 GUI-Setup.app 重打包 e2e（缺 `--setup` 报错 / 顶层落位与 x 位 / 干净家安装 / 卸载回放，§3） |
 | **M19 落点与两条链的补齐（v3.14）** | `ShellProfiles` 的 fish 分支改成往前走、拿到 `~/.profile`；`$SHELL` 为空 / `.` / `/` 时按平台默认；两条新用例（落点表 + Windows 不写）；D21、`gpm help`、§2.3、`internal/home` 的包注释与 README 都写明两条家目录链；文档同步（§0.3.14、PACKAGE-FORMAT 第 1/6/8 节） | ✅ **已完成**（v3.14）：`gofmt` / 三平台 `go vet` / `go test ./...` 全绿 |
+| **M20 第三条入口 install.ps1（v3.15）** | `InstallPS1` + `InstallPowerShell`；`scriptDir` / `toolchainDir` / `dirSpec` 按 shell 分派（`shellSH` / `shellCMD` / `shellPS1`）；`writeAll` 把三条一起打进 zip；三条新用例（字面规矩 / 目录烘焙 / **真 Windows PowerShell 5.1 解析 + 中文哨兵验 BOM**）；`install.cmd` 与 `install.sh` 的输出逐字节未变；文档同步（§0.3.15、D44、FR-33、PACKAGE-FORMAT 第 2/7 节） | ✅ **已完成**（v3.15）：`gofmt` / 三平台 `go vet` / `go test ./...` 全绿 |
 
 ---
 

@@ -829,7 +829,7 @@ func installSelf(binDir, selfVersion string, force bool) (selfResult, error) {
 // retryHint 是「想把 PATH 集成也做上，该重跑哪条命令」的写法。
 //
 // 按平台分开写：Windows 上包里的二进制叫 gpm.exe，用户也是解压后在同一个目录里
-// 双击 install.cmd 的，`./gpm install . --yes` 在 cmd 里根本敲不出来。
+// 双击 install.cmd（或跑 install.ps1）的，`./gpm install . --yes` 在 cmd 里根本敲不出来。
 func retryHint(goos string) string {
 	if goos == "windows" {
 		return "gpm.exe install . --yes"

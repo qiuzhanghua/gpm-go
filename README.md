@@ -7,8 +7,8 @@
 **没有 `upgrade` 子命令，也没有一行网络代码**（`grep -rn 'net/http\|http.Get\|net/url' --include='*.go' .` 无命中）。
 分发者自己决定什么时候出新版本、用户自己把 zip 拿过来 —— 这是整套设计的前提，不是「以后补上」。
 
-- 当前软件版本 **v0.6.5**，设计契约 **v3.14**（[两套版本号](#两套版本号)）。
-- macOS / Linux / Windows 一份实现：安装逻辑全在 Go 里，`install.sh` / `install.cmd` 里只有几行胶水
+- 当前软件版本 **v0.6.5**，设计契约 **v3.15**（[两套版本号](#两套版本号)）。
+- macOS / Linux / Windows 一份实现：安装逻辑全在 Go 里，`install.sh` / `install.cmd` / `install.ps1` 里只有几行胶水
   （切到自己的目录、把家解析成一个具体路径、把安装交给 gpm、把用户给的参数原样转交）。
 - **主要用户**是拿到分发包、想双击装上的非开发人员；**次要用户**是要 `--yes` 无人值守的 CI 与内网运维。
 
@@ -20,7 +20,8 @@
 ```
 ai-desk-1.0.0-darwin-arm64.zip
 ├── install.sh          # macOS / Linux 的 bootstrap
-├── install.cmd         # Windows 的 bootstrap
+├── install.cmd         # Windows 的 bootstrap（双击这条；策略禁脚本时的退路）
+├── install.ps1         # Windows 的 bootstrap（PowerShell 5.1 / 7，终端与 GUI-Setup 用）
 ├── GUI-Setup.app       # 选填：随包的图形安装器（清单 setup: 段声明）
 ├── gpm                 # 本平台的 gpm 二进制（Windows 为 gpm.exe）
 ├── ad-manifest.yaml    # 清单，文件名 = <简称>-manifest.yaml
@@ -49,6 +50,7 @@ unzip ai-desk-1.0.0-darwin-arm64.zip
 cd ai-desk-1.0.0-darwin-arm64
 ./install.sh                      # macOS / Linux
 install.cmd                       # Windows：双击，或在 cmd 里跑
+install.ps1                       # Windows：PowerShell 里跑（5.1 / 7）
 ```
 
 脚本收到的参数会**原样转交**给 gpm（v3.12 起），所以下面这些都成立：
@@ -254,7 +256,7 @@ gpm pack 装配目录 \
   --out dist/ai-desk-1.0.0-darwin-arm64.zip
 ```
 
-* `install.sh` / `install.cmd` / `SHA256SUMS` 都是 `gpm pack` 现场生成的**三平台同一份实现** ——
+* `install.sh` / `install.cmd` / `install.ps1` / `SHA256SUMS` 都是 `gpm pack` 现场生成的**三平台同一份实现** ——
   不需要每个应用仓库各写一遍打包脚本，也就不会各自跑偏。
 * `--default-dir` 只影响生成脚本里那一个默认值，用户仍可用 `COT_HOME` / `TDP_HOME` 或 `--dir` 覆盖。
 * `--setup` 把图形安装器放在 zip **顶层**（与 `install.sh` 并排），**不进 `payload/`、不进 `SHA256SUMS`**：
@@ -295,7 +297,7 @@ ai-desk 的 CI 就按这个名字 `gh release download` 拿二进制。**改了�
 这个仓库里同时有两个「版本」，在 commit message 和别人的 README 里都会出现：
 
 * **软件版本 `v0.6.5`** —— git tag、release 资产名、`gpm version` 打印的那个。
-* **设计契约 `v3.14`** —— `docs/DESIGN.md` 的版本，配套的决策编号（`D41`、`FR-32`、`R1` …；
+* **设计契约 `v3.15`** —— `docs/DESIGN.md` 的版本，配套的决策编号（`D41`、`FR-32`、`R1` …；
   `FR-*` / `A*` 的完整清单在 `docs/REQUIREMENTS.md`）与 `docs/PACKAGE-FORMAT.md` 顶部那句
   「契约 · 已冻结 · v3.14」。契约号变大表示**接口/行为**改了，软件版本按需发布。
 
