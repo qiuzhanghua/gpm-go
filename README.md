@@ -7,7 +7,7 @@
 **没有 `upgrade` 子命令，也没有一行网络代码**（`grep -rn 'net/http\|http.Get\|net/url' --include='*.go' .` 无命中）。
 分发者自己决定什么时候出新版本、用户自己把 zip 拿过来 —— 这是整套设计的前提，不是「以后补上」。
 
-- 当前软件版本 **v0.6.6**，设计契约 **v3.15**（[两套版本号](#两套版本号)）。
+- 当前软件版本 **v1.0.0**，设计契约 **v3.15**（[两套版本号](#两套版本号)）。
 - macOS / Linux / Windows 一份实现：安装逻辑全在 Go 里，`install.sh` / `install.cmd` / `install.ps1` 里只有几行胶水
   （切到自己的目录、把家解析成一个具体路径、把安装交给 gpm、把用户给的参数原样转交）。
 - **主要用户**是拿到分发包、想双击装上的非开发人员；**次要用户**是要 `--yes` 无人值守的 CI 与内网运维。
@@ -296,12 +296,12 @@ ai-desk 的 CI 就按这个名字 `gh release download` 拿二进制。**改了�
 
 这个仓库里同时有两个「版本」，在 commit message 和别人的 README 里都会出现：
 
-* **软件版本 `v0.6.5`** —— git tag、release 资产名、`gpm version` 打印的那个。
+* **软件版本 `v1.0.0`** —— git tag、release 资产名、`gpm version` 打印的那个。
 * **设计契约 `v3.15`** —— `docs/DESIGN.md` 的版本，配套的决策编号（`D41`、`FR-32`、`R1` …；
   `FR-*` / `A*` 的完整清单在 `docs/REQUIREMENTS.md`）与 `docs/PACKAGE-FORMAT.md` 顶部那句
-  「契约 · 已冻结 · v3.14」。契约号变大表示**接口/行为**改了，软件版本按需发布。
+  「契约 · 已冻结 · v3.15」。契约号变大表示**接口/行为**改了，软件版本按需发布。
 
-看到「gpm v3.11 起」说的是行为契约，看到「gpm 0.6.5」说的是那个二进制。
+看到「gpm v3.11 起」说的是行为契约，看到「gpm 1.0.0」说的是那个二进制。
 
 ## 文档
 
@@ -319,7 +319,7 @@ go test ./...                      # 本机单测
 go vet ./...
 
 # 给二进制注入版本号（发布就是这么干的）
-go build -trimpath -ldflags "-s -w -X main.version=0.6.5" -o gpm ./cmd/gpm
+go build -trimpath -ldflags "-s -w -X main.version=1.0.0" -o gpm ./cmd/gpm
 ```
 
 代码结构：
@@ -348,9 +348,9 @@ CI（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)）：
 ## 发版
 
 ```sh
-git tag -a v0.6.5 -m "gpm v0.6.5：……"
-git push gh main v0.6.5        # GitHub：CI 与 Release 都在这儿
-git push gitee main v0.6.5     # Gitee：镜像，同样推 main 与 tag
+git tag -a v1.0.0 -m "gpm v1.0.0：……"
+git push gh main v1.0.0        # GitHub：CI 与 Release 都在这儿
+git push gitee main v1.0.0     # Gitee：镜像，同样推 main 与 tag
 ```
 
 （这个仓库有两个远端：`gh` = GitHub，`gitee` = Gitee 镜像。CI 与发 Release 都在 GitHub，
