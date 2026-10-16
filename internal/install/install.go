@@ -382,6 +382,14 @@ func installToolchains(unpack string, tcs []integrate.Toolchain, force bool, out
 		if err := os.Chmod(exe, 0o755); err != nil {
 			return err
 		}
+		// 家得先在：第一家就是应用自己的家，那目录 gpm 本来就会建；第二家
+		// 往后各自的家（cot 住 $COT_HOME / ~/cot）在还没装过它的机器上根本
+		// 不存在，而自举要一个已经在那儿的目录 —— cot 用 is_dir() 分辨
+		// "把自个儿铺进这个家"还是"装这个包文件"，目录不在就把路径当成包
+		// 文件名，回一句 COT_HOME 未设置（tdp 会自己建，cot 不会）。
+		if err := os.MkdirAll(t.Home, 0o755); err != nil {
+			return err
+		}
 		fmt.Fprintf(out, "正在把 %s 铺进 %s（用包里自带的那一份）…\n", t.Name, t.Home)
 		cmd := exec.Command(exe, "i", "-s", t.Home)
 		cmd.Dir = unpack

@@ -379,3 +379,58 @@ chmod +x "$home/bin/cot"
 		t.Errorf("这次失败却记了账：%+v", led.Packages)
 	}
 }
+
+// 第二家往后各自的家（cot 住 $COT_HOME / ~/cot）在没装过它的机器上还不存在，
+// 而自举要一个已经在那儿的目录：真 cot 用 is_dir() 分辨"把自个儿铺进这个家"
+// 还是"装这个包文件"，目录不在就把路径当成包文件名，回一句 COT_HOME 未设置 ——
+// 于是 requires: [tdp, cot] 这种"应用住 tdp、cot 回自己家"的包，在干净机器上
+// 装不下去。gpm 既然派了这个家，就先把它建出来（2026-10-16，AI Desk 0.5.0 撞上）。
+func TestInstallCreatesSecondToolchainHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("这套用例用 shell 脚本假装工具链")
+	}
+	home := fakeHome(t)
+	root := filepath.Join(home, "tdp") // 第一家 = 应用自己的家
+	cotHome := filepath.Join(home, "cot")
+
+	// 假 cot：家不在就照真 cot 的样子拒绝。
+	cot := `#!/bin/sh
+set -eu
+home="$3"
+if [ ! -d "$home" ]; then
+  echo "Error: COT_HOME 未设置，请先安装 cot" >&2
+  exit 1
+fi
+mkdir -p "$home/bin"
+printf '#!/bin/sh\necho cot\n' > "$home/bin/cot"
+chmod +x "$home/bin/cot"
+`
+	asm := t.TempDir()
+	writePayload(t, filepath.Join(asm, "ad-manifest.yaml"), `id: ai-desk
+name: Demo
+version: 0.1.0
+requires: [tdp, cot]
+entry:
+  `+runtime.GOOS+`:
+    exe: demo
+launch:
+  cmd: ad
+`, 0o644)
+	writePayload(t, filepath.Join(asm, "payload", "demo"), "#!/bin/sh\nexit 0\n", 0o755)
+	// 假 tdp：自己建家（真 tdp 就会先打一句"已创建 TDP_HOME"）。
+	writePayload(t, filepath.Join(asm, "tools", toolchainDir(), "tdp"),
+		"#!/bin/sh\nset -eu\nmkdir -p \"$3/bin\"\n", 0o755)
+	writePayload(t, filepath.Join(asm, "tools", toolchainDir(), "cot"), cot, 0o755)
+
+	var log strings.Builder
+	if err := Install(asm, Options{Yes: true, NoPath: true, Out: &log}); err != nil {
+		t.Fatalf("安装失败：%v\n%s", err, log.String())
+	}
+	if _, err := os.Stat(filepath.Join(cotHome, "bin", "cot")); err != nil {
+		t.Errorf("cot 没被铺进自己的家 %s：%v", cotHome, err)
+	}
+	// 应用还是住在第一家那儿。
+	if _, err := os.Stat(filepath.Join(root, "bin", "ad")); err != nil {
+		t.Errorf("应用没装进 %s：%v", root, err)
+	}
+}
